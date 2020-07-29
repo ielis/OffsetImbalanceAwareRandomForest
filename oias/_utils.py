@@ -4,6 +4,7 @@ import numbers
 from distutils.version import LooseVersion
 
 import numpy as np
+from joblib import effective_n_jobs
 from sklearn.utils import check_array
 
 
@@ -348,3 +349,17 @@ def _joblib_parallel_args(**kwargs):
         if require == 'sharedmem':
             args['backend'] = 'threading'
     return args
+
+# sklearn
+def _partition_estimators(n_estimators, n_jobs):
+    """Private function used to partition estimators between jobs."""
+    # Compute the number of jobs
+    n_jobs = min(effective_n_jobs(n_jobs), n_estimators)
+
+    # Partition estimators between jobs
+    n_estimators_per_job = np.full(n_jobs, n_estimators // n_jobs,
+                                   dtype=np.int)
+    n_estimators_per_job[:n_estimators % n_jobs] += 1
+    starts = np.cumsum(n_estimators_per_job)
+
+    return n_jobs, n_estimators_per_job.tolist(), [0] + starts.tolist()

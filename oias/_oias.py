@@ -1,4 +1,12 @@
+"""This file contains implementation of Offset and Imbalance Aware random forest Classifier. The most of
+the logic is copied from Scikit-Learn ``RandomForestClassifier`` implementation.
+
+The sampling process during training procedure is customized, see the `_parallel_build_trees` and
+`_sample_positive_indices` methods.
+"""
+
 import numbers
+import threading
 import warnings
 
 import numpy as np
@@ -7,10 +15,10 @@ from sklearn.base import ClassifierMixin
 from sklearn.ensemble import BaseEnsemble
 from sklearn.exceptions import DataConversionWarning
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.utils.validation import check_array
+from sklearn.utils.multiclass import check_classification_targets
+from sklearn.utils.validation import check_array, check_is_fitted
 
-from ._utils import check_random_state, _joblib_parallel_args, \
-    _check_sample_offsets
+from ._utils import check_random_state, _joblib_parallel_args, _check_sample_offsets, _partition_estimators
 
 # from `sklearn/ensemble/_forest.py`
 MAX_INT = np.iinfo(np.int32).max
@@ -32,7 +40,7 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
 
                  # ensemble parameters
                  n_estimators=100,
-                 n_positives=None,
+                 n_positives=None,  # TODO - remove, does not really make sense not to use all the available examples of the minority class
                  bootstrap=True,
                  n_jobs=None,
                  verbose=0,
@@ -105,7 +113,9 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
         self.n_jobs = n_jobs
         self.verbose = verbose
 
+        # required by sklearn code, but not supported by OIAS RF
         self.warm_start = False
+        self.class_weight = None
 
     def fit(self, X, y, offsets=None, pos_label=1):
         """
@@ -164,6 +174,8 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
 
         self.n_outputs_ = y.shape[1]
 
+        y, expanded_class_weight = self._validate_y_class_weight(y)
+
         if getattr(y, "dtype", None) != np.float or not y.flags.contiguous:
             y = np.ascontiguousarray(y)
 
@@ -215,11 +227,120 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
             # Collect newly grown trees
             self.estimators_.extend(trees)
 
-    def predict(self):
-        pass
+        # Decapsulate classes_ attributes
+        if hasattr(self, "classes_") and self.n_outputs_ == 1:
+            self.n_classes_ = self.n_classes_[0]
+            self.classes_ = self.classes_[0]
 
-    def predict_proba(self, ):
-        pass
+        return self
+
+    def predict(self, X):
+        """
+        Predict class for X.
+
+        The predicted class of an input sample is a vote by the trees in
+        the forest, weighted by their probability estimates. That is,
+        the predicted class is the one with highest mean probability
+        estimate across the trees.
+
+        Parameters
+        ----------
+        X : {array-like} of shape (n_samples, n_features)
+            The input samples. Internally, its dtype will be converted to
+            ``dtype=np.float32``.
+
+        Returns
+        -------
+        y : ndarray of shape (n_samples,) or (n_samples, n_outputs)
+            The predicted classes.
+        """
+        proba = self.predict_proba(X)
+
+        if self.n_outputs_ == 1:
+            return self.classes_.take(np.argmax(proba, axis=1), axis=0)
+
+        else:
+            n_samples = proba[0].shape[0]
+            # all dtypes should be the same, so just take the first
+            class_type = self.classes_[0].dtype
+            predictions = np.empty((n_samples, self.n_outputs_), dtype=class_type)
+
+            for k in range(self.n_outputs_):
+                predictions[:, k] = self.classes_[k].take(np.argmax(proba[k], axis=1), axis=0)
+
+            return predictions
+
+    def predict_proba(self, X):
+        """
+        Predict class probabilities for X.
+
+        The predicted class probabilities of an input sample are computed as
+        the mean predicted class probabilities of the trees in the forest.
+        The class probability of a single tree is the fraction of samples of
+        the same class in a leaf.
+
+        Parameters
+        ----------
+        X : {array-like} of shape (n_samples, n_features)
+            The input samples. Internally, its dtype will be converted to
+            ``dtype=np.float32``.
+
+        Returns
+        -------
+        p : ndarray of shape (n_samples, n_classes), or a list of n_outputs
+            such arrays if n_outputs > 1.
+            The class probabilities of the input samples. The order of the
+            classes corresponds to that in the attribute :term:`classes_`.
+        """
+        check_is_fitted(self)
+        # Check data
+        X = self._validate_X_predict(X)
+
+        # Assign chunk of trees to jobs
+        n_jobs, _, _ = _partition_estimators(self.n_estimators, self.n_jobs)
+
+        # avoid storing the output of every estimator by summing them here
+        all_proba = [np.zeros((X.shape[0], j), dtype=np.float64)
+                     for j in np.atleast_1d(self.n_classes_)]
+        lock = threading.Lock()
+        Parallel(n_jobs=n_jobs, verbose=self.verbose,
+                 **_joblib_parallel_args(require="sharedmem"))(
+            delayed(_accumulate_prediction)(e.predict_proba, X, all_proba, lock)
+            for e in self.estimators_)
+
+        for proba in all_proba:
+            proba /= len(self.estimators_)
+
+        if len(all_proba) == 1:
+            return all_proba[0]
+        else:
+            return all_proba
+
+    def _validate_X_predict(self, X):
+        """
+        Validate X whenever one tries to predict, apply, predict_proba."""
+        check_is_fitted(self)
+
+        return self.estimators_[0]._validate_X_predict(X, check_input=True)
+
+    def _validate_y_class_weight(self, y):
+        check_classification_targets(y)
+
+        y = np.copy(y)
+        expanded_class_weight = None
+
+        self.classes_ = []
+        self.n_classes_ = []
+
+        y_store_unique_indices = np.zeros(y.shape, dtype=np.int)
+        for k in range(self.n_outputs_):
+            classes_k, y_store_unique_indices[:, k] = \
+                np.unique(y[:, k], return_inverse=True)
+            self.classes_.append(classes_k)
+            self.n_classes_.append(classes_k.shape[0])
+        y = y_store_unique_indices
+
+        return y, expanded_class_weight
 
 
 def _parallel_build_trees(tree: DecisionTreeClassifier, forest: OiasRandomForestClassifier,
@@ -270,7 +391,7 @@ def _sample_positive_indices(a, bins, size, random_instance=None, replace=True):
     Parameters
     ----------
     a : array-like
-        array
+        array with elements, the elements must be within bin boundaries
     bins : array-like of ints
         array with bin boundaries, at least one bin is required
     size : int
@@ -281,12 +402,16 @@ def _sample_positive_indices(a, bins, size, random_instance=None, replace=True):
         Elements are sampled w/ replacement if True, otherwise the sampling is performed w/o replacement
     Returns
     -------
-    elements: numpy.ndarray
-        array with indices that select elements from the array `a`
+    indices : array
+        array with indices that select elements from the array ``a``
     """
     # 0 - initial checks
     n_bins = bins.shape[0] - 1
     assert n_bins > 0, "Expected at least one bin, got {}".format(n_bins)
+
+    # validate that the elements are within the bounds
+    if np.any(a[(bins.min() >= a) | (a > bins.max())]):
+        raise ValueError('`a` must be within `bins` boundaries [{},{}]'.format(bins.min(), bins.max()))
 
     n_samples = a.shape[0]
     assert n_samples > 0, "Expected at least one sample, got {}".format(n_samples)
@@ -297,17 +422,17 @@ def _sample_positive_indices(a, bins, size, random_instance=None, replace=True):
 
     random_instance = check_random_state(random_instance)
 
-    # 1 - count number of variants present in individual bins
-    hist, bin_edges = np.histogram(a=a, bins=bins)
-
-    # 2 - figure out the bin for each variant, creating an array with mapping from `offset` -> `bins`
-    variant_bin_idx = np.digitize(x=a, bins=bins)
+    # 1 - figure out the bin for each variant, creating an array with mapping from `offset` -> `bins`
+    variant_bin_idx = np.digitize(x=a, bins=bins, right=True)
     n_used_bins = len(np.unique(variant_bin_idx))
+
+    # 2 - count number of variants present in individual bins
+    bin_count = np.bincount(variant_bin_idx)[1:]
 
     # 3 - count number of variants that are located in variant's bin
     #   and use the number to calculate the probability of the variant being sampled
-    n_variants_in_bin = hist[variant_bin_idx - 1]
-    variant_proba = 1 / (n_used_bins * n_variants_in_bin)
+    n_variants_in_bin = bin_count[variant_bin_idx - 1]
+    variant_proba = 1 / (n_used_bins * n_variants_in_bin)  # TODO - how about underflow?
 
     # 4 - sample the required number of variant indices using variant probabilities
     return random_instance.choice(n_samples, size=size, replace=replace, p=variant_proba)
@@ -350,3 +475,19 @@ def _get_n_samples_bootstrap(n_samples, max_samples):
 
     msg = "`max_samples` should be int or float, but got type '{}'"
     raise TypeError(msg.format(type(max_samples)))
+
+
+def _accumulate_prediction(predict, X, out, lock):
+    """
+    This is a utility function for joblib's Parallel.
+
+    It can't go locally in ForestClassifier or ForestRegressor, because joblib
+    complains that it cannot pickle it when placed there.
+    """
+    prediction = predict(X, check_input=False)
+    with lock:
+        if len(out) == 1:
+            out[0] += prediction
+        else:
+            for i in range(len(out)):
+                out[i] += prediction[i]
