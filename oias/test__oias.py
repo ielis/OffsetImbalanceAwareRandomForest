@@ -151,8 +151,13 @@ class TestSampling(unittest.TestCase):
         bins = np.array([-10, 0, 2, 10])
         offsets = np.array([-5, -1, 2, 1, 2, 1, 2, 1, 4, 9], dtype=np.int)
 
-        with self.assertRaises(ValueError):
-            _sample_positive_indices(a=offsets, bins=bins, size=11, random_instance=self.rng, replace=False)
+        indices = _sample_positive_indices(a=offsets, bins=bins, size=11, random_instance=self.rng, replace=False)
+
+        # we expect to receive 10 samples only
+        nt.assert_array_equal(np.array([8, 0, 7, 4, 1, 9, 2, 6, 5, 3]), indices)
+
+        # we expect to see all possible indices
+        nt.assert_array_equal(np.arange(10), np.sort(indices))
 
     def test__sample_positive_indices_wo_replacement__a_outside_of_boundaries(self):
         bins = np.array([-10, 0, 2, 10])

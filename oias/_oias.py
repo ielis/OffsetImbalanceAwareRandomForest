@@ -40,7 +40,8 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
 
                  # ensemble parameters
                  n_estimators=100,
-                 n_positives=None,  # TODO - remove, does not really make sense not to use all the available examples of the minority class
+                 n_positives=None,
+                 # TODO - remove, does not really make sense not to use all the available examples of the minority class
                  bootstrap=True,
                  n_jobs=None,
                  verbose=0,
@@ -207,9 +208,7 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
                 # would have got if we hadn't used a warm_start.
                 random_state.randint(MAX_INT, size=len(self.estimators_))
 
-            trees = [self._make_estimator(append=False,
-                                          random_state=random_state)
-                     for i in range(n_more_estimators)]
+            trees = [self._make_estimator(append=False, random_state=random_state) for _ in range(n_more_estimators)]
 
             # Parallel loop: we prefer the threading backend as the Cython code
             # for fitting the trees is internally releasing the Python GIL
@@ -219,9 +218,10 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
             # since correctness does not rely on using threads.
             trees = Parallel(n_jobs=self.n_jobs, verbose=self.verbose,
                              **_joblib_parallel_args(prefer='threads'))(
-                delayed(_parallel_build_trees)(
-                    t, self, X, y, offsets=offsets,
-                    n_pos_samples=n_pos_samples, pos_label=pos_label)
+                delayed(_parallel_build_trees)(t, self, X, y,
+                                               offsets=offsets,
+                                               n_pos_samples=n_pos_samples,
+                                               pos_label=pos_label)
                 for i, t in enumerate(trees))
 
             # Collect newly grown trees
@@ -399,11 +399,12 @@ def _sample_positive_indices(a, bins, size, random_instance=None, replace=True):
     random_instance: None | int | numpy.random.RandomState
         Random number generator. If None, then a new random seed is initialized . If int, then the value is used as random seed.
     replace : bool
-        Elements are sampled w/ replacement if True, otherwise the sampling is performed w/o replacement
+        Elements are sampled w/ replacement if True, otherwise the sampling is performed w/o replacement. Note that if
+        ``replace == False``, then at most ``min(size, n_samples)`` indices are sampled
     Returns
     -------
-    indices : array
-        array with indices that select elements from the array ``a``
+    indices : array with shape (size,)
+        array with indices to sample elements from the array ``a``.
     """
     # 0 - initial checks
     n_bins = bins.shape[0] - 1
@@ -417,8 +418,9 @@ def _sample_positive_indices(a, bins, size, random_instance=None, replace=True):
     assert n_samples > 0, "Expected at least one sample, got {}".format(n_samples)
 
     if not replace:
-        if size > n_samples:
-            raise ValueError('Cannot sample {} elements from {} samples without replacement'.format(size, n_samples))
+        # we cannot draw more elements than `n_samples`, since we are sampling without replacement
+        # TODO - evaluate sanity of this procedure
+        size = min(size, n_samples)
 
     random_instance = check_random_state(random_instance)
 
