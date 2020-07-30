@@ -9,7 +9,7 @@ with open("README.md", 'r') as fh:
     long_description = fh.read()
 
 setup(name='oias',
-      version='0.0.1.dev0',
+      version='0.0.1',
       packages=find_packages(),
       setup_requires=['wheel>=0.34.0'],
       install_requires=requirements,
