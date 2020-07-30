@@ -41,7 +41,6 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
                  # ensemble parameters
                  n_estimators=100,
                  n_positives=None,
-                 # TODO - remove, does not really make sense not to use all the available examples of the minority class
                  bootstrap=True,
                  n_jobs=None,
                  verbose=0,
@@ -156,7 +155,7 @@ class OiasRandomForestClassifier(BaseEnsemble, ClassifierMixin):  # can't use an
 
         self.bins = check_array(self.bins, ensure_2d=False, dtype=np.int)
         if np.any(self.bins[:-1] >= self.bins[1:]):
-            raise ValueError("bins must be sorted")
+            raise ValueError("bin boundaries must be sorted")
 
         # Remap output
         self.n_features_ = X.shape[1]
@@ -361,10 +360,10 @@ def _parallel_build_trees(tree: DecisionTreeClassifier, forest: OiasRandomForest
     pos_idxs_sample = _sample_positive_indices(offsets[pos_idxs], forest.bins, size=n_pos_samples,
                                                random_instance=random_instance, replace=forest.bootstrap)
 
-    # 2 - sample negative indices while respecting the class ratio
-    # how many negative samples do we sample?
-    n_neg = round(forest.class_ratio * pos_idxs_sample.shape[0])
-    neg_idxs_sample = random_instance.choice(a=len(neg_idxs), size=n_neg, replace=forest.bootstrap)
+    # 2 - sample negative indices without replacement, while respecting the class ratio
+    # at most `n_neg` indices are sampled
+    n_neg = min(len(neg_idxs), round(forest.class_ratio * pos_idxs_sample.shape[0]))
+    neg_idxs_sample = random_instance.choice(a=len(neg_idxs), size=n_neg, replace=False)
 
     # 3 - create the dataset - use the sampled indices to select elements from positive and negative indices,
     #   then use the positive and negative we select the instances
@@ -418,8 +417,7 @@ def _sample_positive_indices(a, bins, size, random_instance=None, replace=True):
     assert n_samples > 0, "Expected at least one sample, got {}".format(n_samples)
 
     if not replace:
-        # we cannot draw more elements than `n_samples`, since we are sampling without replacement
-        # TODO - evaluate sanity of this procedure
+        # we cannot draw more elements than `n_samples`, since sample without replacement
         size = min(size, n_samples)
 
     random_instance = check_random_state(random_instance)

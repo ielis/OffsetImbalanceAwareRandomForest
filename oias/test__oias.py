@@ -49,9 +49,9 @@ class TestOiasRandomForestFitting(unittest.TestCase):
 
         y_proba = clf[0].predict_proba(X[[0, 53, 149]])
 
-        nt.assert_almost_equal(y_proba, np.array([[0.4736842, 0.5263158],
+        nt.assert_almost_equal(y_proba, np.array([[0.1666667, 0.8333333],
                                                   [1., 0.],
-                                                  [0.4736842, 0.5263158]]),
+                                                  [0.1666667, 0.8333333]]),
                                decimal=7)
 
 
