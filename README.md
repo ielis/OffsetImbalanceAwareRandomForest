@@ -25,7 +25,7 @@ pip install .
 
 Run the code below in order to train the `OiasRandomForestClassifier` on the Iris dataset.
 
-```bash
+```python
 from sklearn.model_selection import train_test_split
 from oias import OiasRandomForestClassifier, load_imbalanced_iris
 
