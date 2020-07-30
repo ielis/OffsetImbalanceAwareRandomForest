@@ -22,7 +22,7 @@ setup(name='oias',
       url='https://github.com/ielis/OffsetImbalanceAwareRandomForest',
       description='Offset and imbalance-aware random forest classifier',
       license='GPLv3',
-      keywords='bioinformatics genomics algorithm',
+      keywords='bioinformatics genomics algorithm random forest',
 
       package_data={
           '': ['test_data/*']},

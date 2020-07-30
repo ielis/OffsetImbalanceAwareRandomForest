@@ -5,6 +5,7 @@ from distutils.version import LooseVersion
 
 import numpy as np
 from joblib import effective_n_jobs
+from sklearn.datasets import load_iris
 from sklearn.utils import check_array
 
 
@@ -363,3 +364,35 @@ def _partition_estimators(n_estimators, n_jobs):
     starts = np.cumsum(n_estimators_per_job)
 
     return n_jobs, n_estimators_per_job.tolist(), [0] + starts.tolist()
+
+
+def load_imbalanced_iris(rseed=123):
+    """
+    Load iris dataset, adjust classes such that iris virginica has the positive class label (1). Create fake "offsets"
+    with offsets for the negative class and 40% of the positive class being uniformly distributed in [-9,10], and 60% of
+    the positive class being distributed in [1,2].
+
+    Returns
+    -------
+    X : array with shape (n_samples, n_features)
+        array with iris features
+    y : array with shape (n_samples,)
+        array with class labels, where iris virginica == 1
+    offsets : array with shape (n_samples,)
+        "offset" data
+    """
+    X, y = load_iris(return_X_y=True)
+    y_local = np.where(y == 2, 1, 0)  # we consider iris virginica as the positive class
+
+    rs = np.random.RandomState(rseed)
+
+    offsets = np.concatenate([
+        # offsets for class 0 - uniformly distributed across [-10, 10]
+        rs.randint(low=-9, high=10, size=(100,)),
+        # offsets for class 1 - focused in [1,2]
+        rs.randint(low=1, high=2, size=(30,)),
+        # offsets for class 1 - uniformly distributed across [-10, 10]
+        rs.randint(low=-9, high=10, size=(20,))
+    ])
+
+    return X, y_local, offsets
